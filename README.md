@@ -1,4 +1,4 @@
-# ReunionTweaks 0.1.0
+# ReunionTweaks 1.0.0
 
 Graphics add-on for **Life is Strange: Reunion** (PC, Steam), for ReShade with add-on support.
 Raises the game's lighting, shadow, character and detail settings beyond what its menu offers,
