@@ -15,9 +15,11 @@ live, from an in-game overlay.
   distance, finer geometry, finer volumetric fog, higher-precision TSR history.
 - **Post-processing**: switches for film grain, lens flares, depth of field and chromatic
   aberration.
-- **Quality presets**: *Ultra+* (beyond Epic where it's cheap) and *Cinematic* (everything at
-  its highest). **Measure preset costs** runs each one for a few seconds and shows its frame
-  rate on your PC.
+- **Quality presets**: *Ultra+* (everything beyond Epic that costs little; about 15% slower)
+  and *Cinematic* (everything at its highest; about 2.4x the frame time). Measured on an RTX
+  5080 at 4K with 65% resolution scale in one scene. **Measure preset costs** runs each one
+  for a few seconds and shows its frame rate on your PC; **Measure each option** ranks every
+  option by cost.
 - **F8** switches every tweak off and on, to compare.
 
 The game has no hardware ray tracing (its ray tracing shaders weren't shipped), so nothing here

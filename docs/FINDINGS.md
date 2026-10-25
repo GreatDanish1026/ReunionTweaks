@@ -102,4 +102,36 @@ Deck Nine's significance manager keeps characters one LOD below full outside cut
 
 2026-10-25, every option at its highest (Cinematic preset plus all post-processing switches),
 title screen: 42 values applied, 0 not found, 0 not taken, and the game didn't change any of
-them back over 60 s. Costs and visuals not checked in a scene yet.
+them back over 60 s.
+
+## Costs
+
+Measured 2026-10-25 in one free-roam scene from a save (the user standing still), RTX 5080,
+3840x2160 at 65% resolution scale (TSR), HDR, menu Epic except View distance, Foliage, Shading
+and Landscape at High.
+
+Each option on its own (overlay's "Measure each option": 4 s settle, 6 s measured per step;
+Game measured at the start and end, 12.02 and 11.43 ms, so about +-3% is noise):
+
+| option | frame time vs Game |
+|---|---|
+| GiProbes Cinematic (8 px, 16x16 rays, budget 1000) | +67% |
+| GiTracing Detailed (`r.Lumen.TraceMeshSDFs.Allow=1`) | +41% |
+| ReflRoughness 0.8 | +11% |
+| FogCells Fine (4 px) | +6% |
+| ReflRoughness 0.6 | +5% |
+| ReflGlass On | +4% |
+| ShadowSoft 16 rays, GiProbes Epic+, ShadowRes Sharp | +1 to +2% |
+| everything else (shadow sharpest/distance, capsule shadows, character LOD, skin, hair, texture pool, anisotropy, view distance, Nanite 0.5 px, fog 8 px, TSR history) | within noise |
+
+So Ultra+ takes every option at its best choice except the two expensive lighting ones, 0.8
+reflections and 4 px fog. Presets ("Measure preset costs", 5 s settle, 8 s measured):
+
+| preset | first version | final |
+|---|---|---|
+| Game | 85.4 fps | 84.5 fps |
+| Ultra+ | 61.0 fps (+40%, included Detailed tracing) | 73.6 fps (+15%) |
+| Cinematic | 35.8 fps (+139%) | 35.8 fps (+136%) |
+
+Not checked yet: a second, heavier scene (crowds, outdoors with foliage), and how the
+upgrades look side by side (F8).

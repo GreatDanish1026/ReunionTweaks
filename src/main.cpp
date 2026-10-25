@@ -119,14 +119,16 @@ std::vector<Option> g_options = {
     {"Lighting", "Global illumination", "GiTracing", "Bounce light tracing",
      "What Lumen traces bounce light against. The game (High and Epic alike) traces only a\n"
      "coarse whole-scene distance field: soft, blobby bounce light and leaks through thin\n"
-     "walls. Detailed traces each object's own distance field near the camera.",
+     "walls. Detailed traces each object's own distance field near the camera.\n"
+     "Expensive: about 40% longer frames on an RTX 5080 at 4K.",
      L"r.Lumen.TraceMeshSDFs.Allow",
      {{"Game", 0, {}}, {"Detailed", 1, {{L"r.Lumen.TraceMeshSDFs.Allow", L"1"}}}}},
     {"Lighting", "Global illumination", "GiProbes", "Bounce light detail",
      "Spacing of Lumen's lighting probes in pixels and how many rays each traces. The menu\n"
      "uses 32 px on High and 16 px on Epic, with a budget of 300 far-field probes. Epic+ is\n"
      "16 px with more probes; Cinematic is 8 px with twice the rays per probe: steadier,\n"
-     "more detailed indirect light on faces and walls.",
+     "more detailed indirect light on faces and walls. Epic+ is nearly free; Cinematic is\n"
+     "expensive (about 65% longer frames on an RTX 5080 at 4K).",
      L"r.Lumen.ScreenProbeGather.DownsampleFactor",
      {{"Game", 0, {}},
       {"Epic+", 16,
@@ -138,7 +140,8 @@ std::vector<Option> g_options = {
         {L"r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget", L"1000"}}}}},
     {"Lighting", "Reflections", "ReflRoughness", "Reflections on rougher surfaces",
      "Lumen traces reflections up to this roughness; rougher surfaces (wood, painted\n"
-     "walls, skin) fall back to blurry probe lighting. The game leaves it to each scene.",
+     "walls, skin) fall back to blurry probe lighting. The game leaves it to each scene.\n"
+     "About 5% (0.6) and 10% (0.8) longer frames.",
      L"r.Lumen.Reflections.MaxRoughnessToTrace",
      {{"Game", 0, {}},
       {"0.6", 6,
@@ -556,19 +559,26 @@ struct QualityPreset {
 
 const QualityPreset kPresets[] = {
     {"Game", "", "The game's own settings: everything below at Game.", {}},
-    {"Ultra+", "",
-     "Beyond the menu's Epic where it's cheap: detailed bounce light with more probes,\n"
-     "reflections on rougher surfaces and glass, sharp lamp shadows, full-detail characters,\n"
-     "full skin shading, 6 GB textures and 16x filtering, and the higher-precision upscaler;\n"
-     "Epic soft shadows, draw distance and fog where the menu is below Epic. Cost not\n"
-     "measured yet.",
-     {{"GiTracing", 1}, {"GiProbes", 16}, {"ReflRoughness", 6}, {"ReflGlass", 1}, {"ShadowRes", 1},
-      {"ShadowSoft", 8}, {"ShadowDistance", 100}, {"CharLod", 1}, {"Skin", 1}, {"TexturePool", 6144},
-      {"Anisotropy", 16}, {"ViewDistance", 100}, {"FogCells", 8}, {"TsrHistory", 1}}},
-    {"Cinematic", "",
+    // Costs measured 2026-10-25 with "Measure preset costs": RTX 5080, 4K at 65% resolution scale
+    // (TSR), menu mostly Epic, one free-roam scene: Game 84.5 / Ultra+ 73.6 / Cinematic 35.8 fps.
+    // Ultra+ is every option that measured nearly free (within noise) at its best choice, plus
+    // the cheap reflection upgrades. The two expensive lighting choices are left out
+    // (docs/FINDINGS.md, per-option costs).
+    {"Ultra+", "about 15% slower",
+     "Everything beyond the menu's Epic that costs little: more lighting probes, reflections\n"
+     "on rougher surfaces and on glass, the sharpest and smoothest shadows, full-detail\n"
+     "characters (background people too), full skin shading, high-quality hair, 8 GB\n"
+     "textures, 16x filtering, far draw distance, finer geometry, Epic fog and the\n"
+     "higher-precision upscaler. Leaves out detailed bounce light tracing and Cinematic\n"
+     "probes (about +40% and +65% on their own).",
+     {{"GiProbes", 16}, {"ReflRoughness", 6}, {"ReflGlass", 1}, {"ShadowRes", 2}, {"ShadowSoft", 16},
+      {"ShadowDistance", 150}, {"CapsuleShadows", 1}, {"CharLod", 2}, {"Skin", 1}, {"Hair", 1},
+      {"TexturePool", 8192}, {"Anisotropy", 16}, {"ViewDistance", 150}, {"NaniteDetail", 1}, {"FogCells", 8},
+      {"TsrHistory", 1}}},
+    {"Cinematic", "about 2.4x frame time",
      "Everything at its highest: Cinematic bounce light and soft shadows, sharpest shadows,\n"
      "full detail for background people too, high-quality hair, finer geometry, far draw\n"
-     "distance and finest fog. For photo mode or a lot of GPU headroom. Cost not measured yet.",
+     "distance and finest fog. For photo mode or a lot of GPU headroom.",
      {{"GiTracing", 1}, {"GiProbes", 8}, {"ReflRoughness", 8}, {"ReflGlass", 1}, {"ShadowRes", 2},
       {"ShadowSoft", 16}, {"ShadowDistance", 150}, {"CapsuleShadows", 1}, {"CharLod", 2}, {"Skin", 1},
       {"Hair", 1}, {"TexturePool", 8192}, {"Anisotropy", 16}, {"ViewDistance", 150}, {"NaniteDetail", 1},
@@ -629,26 +639,71 @@ float Mean(const std::vector<float>& v) {
     return static_cast<float>(sum / v.size());
 }
 
-constexpr ULONGLONG kSettleMs = 5000, kSampleMs = 8000;
+// A measurement runs stages one after another: each sets the quality options (key -> choice id,
+// everything else in a preset at Game), settles, then averages the frame time. "Presets" runs
+// Game and each preset; "Each option" runs Game, then every option a preset uses at each choice
+// a preset picks, one at a time, then Game again (to show drift).
+struct Stage {
+    std::string label;
+    std::vector<std::pair<std::string, int>> values;
+};
+
 struct Measure {
     bool running = false;
-    int stage = 0;
+    bool perOption = false;
+    ULONGLONG settleMs = 5000, sampleMs = 8000;
+    std::vector<Stage> stages;
+    size_t stage = 0;
     ULONGLONG stageStart = 0;
     bool sampling = false;
     std::vector<float> samples;
     std::vector<std::pair<std::string, int>> saved;
-    float resultMs[kPresetCount] = {};
+    std::vector<float> resultMs;
     bool done = false;
     std::string note;
+    std::string summary;
 } g_measure;
 
-void StartMeasure() {
+void ApplyStage(const Stage& st) {
+    for (const std::string& key : PresetKeys())
+        if (Option* o = FindOption(key.c_str())) o->value = 0;
+    for (auto& [key, id] : st.values)
+        if (Option* o = FindOption(key.c_str())) o->value = id;
+    g_dirty = true;
+}
+
+const char* ChoiceName(const Option& o, int id) {
+    for (const Choice& c : o.choices)
+        if (c.id == id) return c.label;
+    return "?";
+}
+
+void StartMeasure(bool perOption) {
     g_measure = {};
     g_measure.running = true;
+    g_measure.perOption = perOption;
+    if (perOption) g_measure.settleMs = 4000, g_measure.sampleMs = 6000;
     for (const Option& o : g_options) g_measure.saved.push_back({o.key, o.value});
+    g_measure.stages.push_back({"Game", {}});
+    if (perOption) {
+        for (const Option& o : g_options) {
+            std::set<int> ids;
+            for (const QualityPreset& p : kPresets)
+                if (int id = PresetValue(p, o.key)) ids.insert(id);
+            for (int id : ids) g_measure.stages.push_back({std::string(o.key) + " " + ChoiceName(o, id), {{o.key, id}}});
+        }
+        g_measure.stages.push_back({"Game (again)", {}});
+    } else {
+        for (int i = 1; i < kPresetCount; ++i) {
+            Stage st{kPresets[i].label, {}};
+            for (auto& [key, id] : kPresets[i].values) st.values.push_back({key, id});
+            g_measure.stages.push_back(st);
+        }
+    }
+    g_measure.resultMs.assign(g_measure.stages.size(), 0);
     g_measure.stageStart = GetTickCount64();
-    ApplyPreset(0);
-    Log("measure: started");
+    ApplyStage(g_measure.stages[0]);
+    Log("measure: started (%s, %zu stages)", perOption ? "each option" : "presets", g_measure.stages.size());
 }
 
 void FinishMeasure(const char* why) {
@@ -660,35 +715,66 @@ void FinishMeasure(const char* why) {
     Log("measure: %s", why);
 }
 
+void SummarizeMeasure() {
+    const std::vector<float>& r = g_measure.resultMs;
+    const float base = g_measure.perOption ? (r.front() + r.back()) / 2 : r.front();
+    char line[160];
+    if (!g_measure.perOption) {
+        std::string sum = "Game " + std::to_string(static_cast<int>(1000.0f / r[0] + 0.5f)) + " fps";
+        std::string log = "measure: result";
+        for (size_t i = 1; i < r.size(); ++i) {
+            snprintf(line, sizeof(line), ", %s %.0f fps (%+.0f%% frame time)", g_measure.stages[i].label.c_str(),
+                     1000.0f / r[i], (r[i] / base - 1) * 100);
+            sum += line;
+            snprintf(line, sizeof(line), ", %s %+.0f%% frame time", g_measure.stages[i].label.c_str(), (r[i] / base - 1) * 100);
+            log += line;
+        }
+        g_measure.summary = sum;
+        Log("%s", log.c_str());
+        return;
+    }
+    // Each option, costliest first.
+    std::vector<size_t> order;
+    for (size_t i = 1; i + 1 < r.size(); ++i) order.push_back(i);
+    std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return r[x] > r[y]; });
+    Log("measure: each option vs Game %.2f ms (start %.2f, end %.2f), costliest first:", base, r.front(), r.back());
+    std::string sum;
+    for (size_t k = 0; k < order.size(); ++k) {
+        size_t i = order[k];
+        Log("measure:   %+6.1f%%  %+6.2f ms  %s", (r[i] / base - 1) * 100, r[i] - base, g_measure.stages[i].label.c_str());
+        if (k < 4) {
+            snprintf(line, sizeof(line), "%s%s %+.0f%%", k ? ", " : "Costliest: ", g_measure.stages[i].label.c_str(),
+                     (r[i] / base - 1) * 100);
+            sum += line;
+        }
+    }
+    g_measure.summary = sum + " (all in ReunionTweaks.log)";
+}
+
 void MeasureOnFrame(float ms, bool focused) {
     if (!g_measure.running) return;
     if (!focused) return FinishMeasure("stopped: the game lost focus");
     if (!g_enabled) return FinishMeasure("stopped: tweaks switched off (F8)");
     ULONGLONG now = GetTickCount64();
     if (!g_measure.sampling) {
-        if (now - g_measure.stageStart >= kSettleMs) g_measure.sampling = true, g_measure.stageStart = now;
+        if (now - g_measure.stageStart >= g_measure.settleMs) g_measure.sampling = true, g_measure.stageStart = now;
         return;
     }
     g_measure.samples.push_back(ms);
-    if (now - g_measure.stageStart < kSampleMs) return;
+    if (now - g_measure.stageStart < g_measure.sampleMs) return;
     float avg = Mean(g_measure.samples);
     g_measure.resultMs[g_measure.stage] = avg;
-    Log("measure: %s %.2f ms average (%.1f fps) over %zu frames", kPresets[g_measure.stage].label, avg, 1000.0f / avg,
-        g_measure.samples.size());
+    Log("measure: %s %.2f ms average (%.1f fps) over %zu frames", g_measure.stages[g_measure.stage].label.c_str(), avg,
+        1000.0f / avg, g_measure.samples.size());
     g_measure.samples.clear();
     g_measure.sampling = false;
     g_measure.stageStart = now;
-    if (++g_measure.stage < kPresetCount) {
-        ApplyPreset(g_measure.stage);
+    if (++g_measure.stage < g_measure.stages.size()) {
+        ApplyStage(g_measure.stages[g_measure.stage]);
         return;
     }
     g_measure.done = true;
-    char line[200];
-    int n = snprintf(line, sizeof(line), "measure: result");
-    for (int i = 1; i < kPresetCount; ++i)
-        n += snprintf(line + n, sizeof(line) - n, ", %s %+.0f%% frame time", kPresets[i].label,
-                      (g_measure.resultMs[i] / g_measure.resultMs[0] - 1) * 100);
-    Log("%s", line);
+    SummarizeMeasure();
     FinishMeasure("done");
 }
 
@@ -972,7 +1058,11 @@ void DrawOverlay(effect_runtime*) {
                     changed = true;
                     Log("preset: %s", kPresets[i].label);
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kPresets[i].tip);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s%s", kPresets[i].tip,
+                                      *kPresets[i].cost ? "\n\nMeasured on an RTX 5080 at 4K (65% resolution scale, menu\n"
+                                                          "mostly Epic) in one free-roam scene. Yours may differ."
+                                                        : "");
             }
             ImGui::EndCombo();
         }
@@ -986,29 +1076,27 @@ void DrawOverlay(effect_runtime*) {
 
     if (kPresetCount > 1) {
         if (measuring) {
-            ImGui::TextColored(kAccent, "Measuring %s (%d of %d)... keep the camera still.",
-                               kPresets[g_measure.stage].label, g_measure.stage + 1, kPresetCount);
+            ImGui::TextColored(kAccent, "Measuring %s (%zu of %zu)... keep the camera still.",
+                               g_measure.stages[g_measure.stage].label.c_str(), g_measure.stage + 1,
+                               g_measure.stages.size());
             ImGui::SameLine();
             if (ImGui::SmallButton("Stop")) FinishMeasure("stopped");
         } else {
             ImGui::BeginDisabled(live != Live::Ready || !g_enabled);
-            if (ImGui::SmallButton("Measure preset costs")) StartMeasure();
+            if (ImGui::SmallButton("Measure preset costs")) StartMeasure(false);
             ImGui::EndDisabled();
             Help("Runs each preset for 13 s (5 s to settle, 8 s measured) and shows how much longer\n"
                  "each frame takes than with Game. Stand still in a typical scene and leave the mouse\n"
                  "alone. Your options come back afterwards.");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(live != Live::Ready || !g_enabled);
+            if (ImGui::SmallButton("Measure each option")) StartMeasure(true);
+            ImGui::EndDisabled();
+            Help("Runs every option the presets use on its own (10 s each, about 5 minutes in all)\n"
+                 "and writes how much each one costs to ReunionTweaks.log, costliest first.");
             if (g_measure.done) {
-                ImGui::SameLine();
-                std::string r = "Game " + std::to_string(static_cast<int>(1000.0f / g_measure.resultMs[0] + 0.5f)) + " fps";
-                for (int i = 1; i < kPresetCount; ++i) {
-                    char b[80];
-                    snprintf(b, sizeof(b), ", %s %.0f fps (%+.0f%% frame time)", kPresets[i].label,
-                             1000.0f / g_measure.resultMs[i], (g_measure.resultMs[i] / g_measure.resultMs[0] - 1) * 100);
-                    r += b;
-                }
-                ImGui::TextDisabled("%s", r.c_str());
+                ImGui::TextDisabled("%s", g_measure.summary.c_str());
             } else if (!g_measure.note.empty()) {
-                ImGui::SameLine();
                 ImGui::TextColored(kWarn, "Measurement %s.", g_measure.note.c_str());
             }
         }
