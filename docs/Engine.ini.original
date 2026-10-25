@@ -1,0 +1,4 @@
+[/script/engine.renderersettings]
+r.DepthOfFieldQuality=0
+r.MotionBlurQuality=0
+r.SceneColorFringeQuality=0
